@@ -1,0 +1,4 @@
+; Reference manifest for a strictly isolated wardrobe session.
+; Do not copy this over an existing mods.txt; use Set-WardrobeEnabled.ps1 instead.
+ZeroCompanyMandoWardrobe : 1
+
