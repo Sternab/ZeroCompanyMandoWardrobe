@@ -9,7 +9,7 @@ Adds the Mandalorian Man001, Man002, and Cly armour sets already shipped with **
 - Sixteen ordinary colourable wardrobe choices across headwear, tops, armwear, lower body, and boots.
 - Man001, Man002, and both Cly helmet variants.
 - Authored backpacks remain linked to their armour instead of appearing as broken standalone tiles.
-- Man001/Man002 helmets are fitted around the live animated head pivot, eliminating the tested face clipping without hiding the character's face.
+- Man001/Man002 helmets are fitted in the final current and previous render palettes around the live animated head pivot, eliminating the tested face clipping without hiding the character's face or moving its scene component.
 - Mandalorian helmets use the game's authored helmet voice effect in conversations.
 - Exact human-species gating; the mod does not globally unlock every authored or incompatible outfit.
 - The game's original compatibility check still makes the final decision after the narrowly required Mandalorian/Cly tags are supplied.
@@ -28,7 +28,7 @@ The tested files are pinned to these hashes:
 |---|---|
 | `SWZeroCompany.exe` | `C69131D496756EA421E408261FBA33B60613948E2C480ACAC91CB93632A4B67C` |
 | compatibility `UE4SS.dll` | `8CB45C18230547A1EAD97BFEB34A2B5EF710B778890DDFC01877A7E9C61A07F4` |
-| wardrobe `main.dll` | `CCF08AB5E82CE02ED5016857AA1B322130B95E292ADF6E1F8149A2C0F5FBAF2A` |
+| wardrobe `main.dll` | `DC4FB9542A7680C62E3CD5FF49D441A0E345C7835E695FC1BB5E028C808A9CA6` |
 
 The installer and DLL refuse an unrecognised executable or UE4SS build rather than guessing at native addresses.
 
@@ -40,7 +40,7 @@ The installer and DLL refuse an unrecognised executable or UE4SS build rather th
    - Choose **Manage → Browse local files**.
    - Open `SWZeroCompany`, then `Binaries`, then `Win64`.
    - Extract the UE4SS compatibility package into that `Win64` folder. When correctly installed, the folder contains `ue4ss\UE4SS.dll`.
-3. Download `ZeroCompanyMandoWardrobe-v0.4.0-build24874058.zip` from this repository's Releases page.
+3. Download `ZeroCompanyMandoWardrobe-v0.4.1-build24874058.zip` from this repository's Releases page.
 4. Right-click the ZIP, choose **Extract All**, and open the newly extracted folder. Do not run the installer from inside the ZIP preview.
 5. Double-click **`Install-Wardrobe.cmd`**. Leave its window open until it says `INSTALL COMPLETE`.
 
@@ -151,17 +151,18 @@ powershell -ExecutionPolicy Bypass -File ".\Uninstall-Wardrobe.ps1" -RemoveFiles
 
 ## Compatibility and limitations
 
-- Version 0.4.0 supports only Steam build `24874058`. A game update will probably require a newly verified release.
-- Man001/Man002 helmet fitting is runtime and animation-aware. A face may be visible very briefly while a newly created preview helmet settles and is fitted.
-- Helmet fitting was runtime-tested on masculine Hawks in the wardrobe, hub movement, and conversations. Every human face/body combination has not been visually checked.
+- Version 0.4.1 supports only Steam build `24874058`. A game update will probably require a newly verified release.
+- Man001/Man002 helmet fitting is runtime and animation-aware. A newly created helmet may briefly appear at its authored size before the bounded mesh registry identifies it.
+- Helmet fitting was runtime-tested on masculine Hawks in the wardrobe, Den movement, conversations, cutscenes, and a complete mission. Every human face/body combination has not been visually checked.
+- Install, update, disable, or remove the mod only while the game is closed. Do not hot-unload or hot-reload its native DLL in a running UE4SS session.
 - The catalogue logic is gated to the game's exact Human species tag, but every possible human character/body combination has not been visually checked.
 - No achievement-disabling code or game-side mod gate was found. Achievements are expected to remain available, but a naturally earned achievement with this exact runtime setup has not yet been observed.
 
 ## Source and safety boundary
 
-The complete mod source is in [`src/dllmain.cpp`](src/dllmain.cpp) and [`src/helmet_fit.cpp`](src/helmet_fit.cpp), with reproducible build instructions in [`docs/BUILDING.md`](docs/BUILDING.md).
+The complete source and reproducible build instructions are available in the [v0.4.1 tagged repository](https://github.com/Sternab/ZeroCompanyMandoWardrobe/tree/v0.4.1-build24874058).
 
-The mod hooks four exact game functions and validates the executable PE identity plus every native function prologue it relies on before enabling itself. It modifies wardrobe catalogue results only for nineteen explicitly named shipped definitions: sixteen visible parts and three hidden backpack dependencies. Helmet fitting is restricted to the exact Man001/Man002 helmet meshes, keeps authored transforms for restoration, and does not hide or mutate face components. It does not patch the game executable on disk or include extracted game assets.
+The mod hooks six exact game functions and validates the executable PE identity plus every native function prologue it relies on before enabling itself. It modifies wardrobe catalogue results only for nineteen explicitly named shipped definitions: sixteen visible parts and three hidden backpack dependencies. Helmet fitting is restricted to the exact Man001/Man002 helmet meshes and post-multiplies only their completed current and previous skinning palettes. It never writes scene-component transforms, attachments, or face visibility. It does not patch the game executable on disk or include extracted game assets.
 
 ## Licence and disclaimer
 

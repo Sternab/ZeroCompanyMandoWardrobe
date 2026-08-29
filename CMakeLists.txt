@@ -15,7 +15,7 @@ add_subdirectory("${RE_UE4SS_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/re-ue4ss"
 
 add_library(ZeroCompanyMandoWardrobe SHARED
     src/dllmain.cpp
-    src/helmet_fit.cpp
+    src/helmet_render_fit.cpp
 )
 
 target_compile_features(ZeroCompanyMandoWardrobe PRIVATE cxx_std_23)

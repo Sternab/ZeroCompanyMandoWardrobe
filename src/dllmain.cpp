@@ -19,7 +19,7 @@
 #include <Unreal/UObject.hpp>
 #include <polyhook2/Detour/x64Detour.hpp>
 
-#include "helmet_fit.hpp"
+#include "helmet_render_fit.hpp"
 
 namespace
 {
@@ -510,21 +510,21 @@ namespace
 #else
             ModName = STR("ZeroCompanyMandoWardrobe");
 #endif
-            ModVersion = STR("0.4.0");
-            ModDescription = STR("Colourable Man001/Man002/Cly human wardrobe with animation-safe Mandalorian helmet fitting for Zero Company build 24874058");
+            ModVersion = STR("0.4.1");
+            ModDescription = STR("Colourable Man001/Man002/Cly human wardrobe with a head-pivot render-palette Mandalorian helmet fit for Zero Company build 24874058");
             ModAuthors = STR("Sternab");
 #if defined(ZERO_COMPANY_MANDO_WARDROBE_INIT_CANARY)
             RC::Output::send<RC::LogLevel::Verbose>(
                 STR("[ZeroCompanyMandoWardrobe] loaded init_canary=true hooks_pending=false mutation_capability=false\n"));
 #else
             RC::Output::send<RC::LogLevel::Verbose>(
-                STR("[ZeroCompanyMandoWardrobe] loaded scope=exact-Man001A-Man002A-Cly-all-human helmet_fit=Man001-Man002-head-pivot-compensated hooks_pending=true global_validation_bypass=false unequip_flags_untouched=true authored_only_excluded=true exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 human_species_gate=true\n"));
+                STR("[ZeroCompanyMandoWardrobe] loaded scope=exact-Man001A-Man002A-Cly-all-human helmet_fit=Man001-Man002-head-pivot-render-palette-horizontal-1.06 matrix_mutation=true scene_transform_writes=false face_visibility_mutation=false hooks_pending=true global_validation_bypass=false unequip_flags_untouched=true authored_only_excluded=true exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 human_species_gate=true\n"));
 #endif
         }
 
         ~ZeroCompanyMandoWardrobeMod() override
         {
-            ::ZeroCompanyMandoWardrobe::HelmetFit::shutdown();
+            ::ZeroCompanyMandoWardrobe::HelmetRenderFit::shutdown();
             if (g_voice_solver_hook)
             {
                 g_voice_solver_hook->unHook();
@@ -637,7 +637,7 @@ namespace
                 return;
             }
 
-            if (!::ZeroCompanyMandoWardrobe::HelmetFit::initialize())
+            if (!::ZeroCompanyMandoWardrobe::HelmetRenderFit::initialize())
             {
                 g_voice_solver_hook->unHook();
                 g_filter_hook->unHook();
@@ -649,18 +649,18 @@ namespace
                 g_filter_trampoline = 0;
                 g_does_part_trampoline = 0;
                 RC::Output::send<RC::LogLevel::Error>(
-                    STR("[ZeroCompanyMandoWardrobe] REFUSED reason=helmet-fit-initialization-failed hooks_active=false\n"));
+                    STR("[ZeroCompanyMandoWardrobe] REFUSED reason=helmet-render-fit-initialization-failed hooks_active=false\n"));
                 return;
             }
 
             g_hooks_active = true;
             RC::Output::send<RC::LogLevel::Verbose>(
-                STR("[ZeroCompanyMandoWardrobe] READY hooks_active=true build=24874058 requirement_policy=human-species-gate-then-original-check-with-temporary-Mdo-and-exact-Cly-tags exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 helmet_voice_policy=original-first-then-exact-Mando-ID-with-stock-authored-preset helmet_fit=Man001-Man002-head-pivot-compensated-horizontal-1.06 failure_isolation=per-component-retry face_visibility_mutation=false KervisNoHelm=false unequip_flags_untouched=true global_validation_bypass=false\n"));
+                STR("[ZeroCompanyMandoWardrobe] READY hooks_active=true build=24874058 requirement_policy=human-species-gate-then-original-check-with-temporary-Mdo-and-exact-Cly-tags exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 helmet_voice_policy=original-first-then-exact-Mando-ID-with-stock-authored-preset helmet_fit=Man001-Man002-head-pivot-render-palette-horizontal-1.06 matrix_mutation=true scene_transform_writes=false face_visibility_mutation=false KervisNoHelm=false unequip_flags_untouched=true global_validation_bypass=false\n"));
         }
 
         auto on_update() -> void override
         {
-            ::ZeroCompanyMandoWardrobe::HelmetFit::update();
+            ::ZeroCompanyMandoWardrobe::HelmetRenderFit::update();
             const auto compatibility_mask = g_pending_compatibility_mask.exchange(0, std::memory_order_acquire);
             const auto catalogue_mask = g_pending_catalogue_mask.exchange(0, std::memory_order_acquire);
             const auto voice_mask = g_pending_voice_mask.exchange(0, std::memory_order_acquire);
