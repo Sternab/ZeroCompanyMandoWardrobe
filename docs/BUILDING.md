@@ -1,6 +1,6 @@
 # Building from source
 
-The v0.3.0 DLL was built on Windows with Visual Studio 2022, CMake 3.22 or newer, and the RE-UE4SS source API at commit:
+The v0.4.0 DLL was built on Windows with Visual Studio 2022, CMake 3.22 or newer, and the RE-UE4SS source API at commit:
 
 ```text
 a1e7f571c789f63f3de6773d056be6f778c14dc8

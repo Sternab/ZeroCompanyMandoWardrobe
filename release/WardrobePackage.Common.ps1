@@ -1,11 +1,12 @@
 Set-StrictMode -Version Latest
 
 $script:WardrobeModName = 'ZeroCompanyMandoWardrobe'
-$script:WardrobePackageVersion = '0.3.0-build24874058'
-$script:WardrobeDllSha256 = '10366CF4560450038D8030EDB31720C011670E1030ABB86F0C41DD1C06DEC879'
+$script:WardrobePackageVersion = '0.4.0-build24874058'
+$script:WardrobeDllSha256 = 'CCF08AB5E82CE02ED5016857AA1B322130B95E292ADF6E1F8149A2C0F5FBAF2A'
 $script:RetailExeSha256 = 'C69131D496756EA421E408261FBA33B60613948E2C480ACAC91CB93632A4B67C'
 $script:CompatibilityUe4ssSha256 = '8CB45C18230547A1EAD97BFEB34A2B5EF710B778890DDFC01877A7E9C61A07F4'
-$script:DefaultGameBin = 'C:\Program Files (x86)\Steam\steamapps\common\Star Wars Zero Company\SWZeroCompany\Binaries\Win64'
+$script:SteamAppId = '2075800'
+$script:SteamInstallDirName = 'Star Wars Zero Company'
 
 function Get-WardrobeDefaultBackupRoot {
     $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
@@ -24,12 +25,88 @@ function Assert-ZeroCompanyStopped {
 }
 
 function Resolve-WardrobeGameBin {
-    param([Parameter(Mandatory=$true)][string]$GameBin)
+    param([AllowNull()][AllowEmptyString()][string]$GameBin)
 
-    if (-not (Test-Path -LiteralPath $GameBin -PathType Container)) {
-        throw "Game binary directory is missing: $GameBin"
+    if (-not [string]::IsNullOrWhiteSpace($GameBin)) {
+        if (-not (Test-Path -LiteralPath $GameBin -PathType Container)) {
+            throw "Game binary directory is missing: $GameBin"
+        }
+        $resolved = (Resolve-Path -LiteralPath $GameBin).ProviderPath.TrimEnd([IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath (Join-Path $resolved 'SWZeroCompany.exe') -PathType Leaf)) {
+            throw "The supplied directory is not Zero Company's Win64 folder: $resolved"
+        }
+        return $resolved
     }
-    return (Resolve-Path -LiteralPath $GameBin).ProviderPath.TrimEnd([IO.Path]::DirectorySeparatorChar)
+
+    $steamRoots = @()
+    foreach ($registryValue in @(
+        @{ Path = 'HKCU:\Software\Valve\Steam'; Name = 'SteamPath' },
+        @{ Path = 'HKLM:\SOFTWARE\WOW6432Node\Valve\Steam'; Name = 'InstallPath' },
+        @{ Path = 'HKLM:\SOFTWARE\Valve\Steam'; Name = 'InstallPath' }
+    )) {
+        try {
+            $value = [string](Get-ItemPropertyValue -LiteralPath $registryValue.Path -Name $registryValue.Name -ErrorAction Stop)
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $steamRoots += $value }
+        } catch {
+            # Registry discovery is best-effort; libraryfolders.vdf is authoritative below.
+        }
+    }
+    $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
+        $steamRoots += (Join-Path $programFilesX86 'Steam')
+    }
+    $steamRoots = @($steamRoots |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Group-Object { $_.ToLowerInvariant() } |
+        ForEach-Object { $_.Group[0] })
+
+    foreach ($steamRoot in @($steamRoots)) {
+        $libraryFile = Join-Path $steamRoot 'steamapps\libraryfolders.vdf'
+        if (-not (Test-Path -LiteralPath $libraryFile -PathType Leaf)) { continue }
+        try {
+            $libraryText = [IO.File]::ReadAllText($libraryFile)
+            foreach ($match in [regex]::Matches($libraryText, '(?im)^\s*"path"\s+"(?<path>[^"]+)"')) {
+                $libraryRoot = $match.Groups['path'].Value.Replace('\\','\')
+                if (-not [string]::IsNullOrWhiteSpace($libraryRoot)) { $steamRoots += $libraryRoot }
+            }
+        } catch {
+            # Continue with every other discovered Steam root.
+        }
+    }
+    $steamRoots = @($steamRoots |
+        Group-Object { $_.ToLowerInvariant() } |
+        ForEach-Object { $_.Group[0] })
+
+    $matches = @()
+    foreach ($steamRoot in $steamRoots) {
+        $steamApps = Join-Path $steamRoot 'steamapps'
+        $installDir = $script:SteamInstallDirName
+        $manifest = Join-Path $steamApps "appmanifest_$($script:SteamAppId).acf"
+        if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+            try {
+                $manifestText = [IO.File]::ReadAllText($manifest)
+                $installMatch = [regex]::Match($manifestText, '(?im)^\s*"installdir"\s+"(?<dir>[^"]+)"')
+                if ($installMatch.Success) { $installDir = $installMatch.Groups['dir'].Value }
+            } catch {
+                # The shipped Steam install directory name remains a safe candidate.
+            }
+        }
+        $candidate = Join-Path $steamApps "common\$installDir\SWZeroCompany\Binaries\Win64"
+        if (Test-Path -LiteralPath (Join-Path $candidate 'SWZeroCompany.exe') -PathType Leaf) {
+            $matches += (Resolve-Path -LiteralPath $candidate).ProviderPath.TrimEnd([IO.Path]::DirectorySeparatorChar)
+        }
+    }
+    $matches = @($matches |
+        Group-Object { $_.ToLowerInvariant() } |
+        ForEach-Object { $_.Group[0] })
+    if ($matches.Count -eq 1) {
+        Write-Host "AUTO-DETECTED Zero Company: $($matches[0])"
+        return $matches[0]
+    }
+    if ($matches.Count -gt 1) {
+        throw "Multiple Zero Company installations were found. Re-run with -GameBin followed by the intended SWZeroCompany\Binaries\Win64 path: $($matches -join '; ')"
+    }
+    throw 'Zero Company could not be auto-detected in Steam libraries. In Steam, right-click the game, choose Manage > Browse local files, open SWZeroCompany\Binaries\Win64, then re-run with -GameBin followed by that full path.'
 }
 
 function Assert-KnownFileHash {

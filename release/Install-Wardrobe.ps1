@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$GameBin = 'C:\Program Files (x86)\Steam\steamapps\common\Star Wars Zero Company\SWZeroCompany\Binaries\Win64',
+    [string]$GameBin,
     [ValidateSet('Disabled','Enabled')]
-    [string]$Mode = 'Disabled',
+    [string]$Mode = 'Enabled',
     [string]$BackupRoot
 )
 

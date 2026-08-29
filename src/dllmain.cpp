@@ -12,9 +12,14 @@
 #include <DynamicOutput/DynamicOutput.hpp>
 #include <Mod/CppUserModBase.hpp>
 #include <Unreal/Core/Containers/Array.hpp>
+#include <Unreal/CoreUObject/UObject/Class.hpp>
+#include <Unreal/CoreUObject/UObject/UnrealType.hpp>
 #include <Unreal/FPrimaryAssetId.hpp>
 #include <Unreal/NameTypes.hpp>
+#include <Unreal/UObject.hpp>
 #include <polyhook2/Detour/x64Detour.hpp>
+
+#include "helmet_fit.hpp"
 
 namespace
 {
@@ -22,6 +27,7 @@ namespace
     using RC::Unreal::FPrimaryAssetId;
     using RC::Unreal::FPrimaryAssetType;
     using RC::Unreal::TArray;
+    using RC::Unreal::UObject;
 
     static_assert(sizeof(FName) == 8, "Zero Company wardrobe mod requires an eight-byte FName ABI");
     static_assert(sizeof(FPrimaryAssetId) == 16, "Zero Company wardrobe mod requires a 16-byte FPrimaryAssetId ABI");
@@ -31,6 +37,10 @@ namespace
     constexpr std::uintptr_t kGameplayTagContainerCopyCtorRva = 0x40F7B20;
     constexpr std::uintptr_t kGameplayTagContainerDtorRva = 0x16C2E60;
     constexpr std::uintptr_t kGameplayTagContainerAddTagRva = 0x41017A0;
+    constexpr std::uintptr_t kSolveForVoiceoverPresetRva = 0x639E1E0;
+    constexpr std::uintptr_t kGetSlotInstanceRva = 0x63C3860;
+    constexpr std::uintptr_t kGetPartDefinitionFromPartIdRva = 0x63C5660;
+    constexpr std::uintptr_t kSlotPrimaryAssetIdOffset = 0xF0;
 
     constexpr std::uint32_t kExpectedPeTimestamp = 0xE10ABE56;
     constexpr std::uint32_t kExpectedImageSize = 0x0E354000;
@@ -54,6 +64,18 @@ namespace
     constexpr std::array<std::uint8_t, 16> kGameplayTagContainerAddTagBytes{
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83,
         0xEC, 0x20, 0x48, 0x8B, 0x02, 0x48, 0x8B, 0xF9,
+    };
+    constexpr std::array<std::uint8_t, 16> kSolveForVoiceoverPresetBytes{
+        0x4C, 0x8B, 0xDC, 0x55, 0x41, 0x54, 0x48, 0x81,
+        0xEC, 0x98, 0x00, 0x00, 0x00, 0xC7, 0x01, 0xFF,
+    };
+    constexpr std::array<std::uint8_t, 16> kGetSlotInstanceBytes{
+        0x4C, 0x8B, 0xDC, 0x48, 0x83, 0xEC, 0x48, 0x49,
+        0x8D, 0x43, 0x08, 0x49, 0x89, 0x53, 0xD8, 0x49,
+    };
+    constexpr std::array<std::uint8_t, 16> kGetPartDefinitionFromPartIdBytes{
+        0x4C, 0x8B, 0xDC, 0x53, 0x55, 0x48, 0x81, 0xEC,
+        0xB8, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x33,
     };
 
     struct GameplayTag
@@ -117,8 +139,12 @@ namespace
     using GameplayTagContainerCopyCtorFunction = GameplayTagContainer*(__fastcall*)(GameplayTagContainer*, const GameplayTagContainer*);
     using GameplayTagContainerDtorFunction = void(__fastcall*)(GameplayTagContainer*);
     using GameplayTagContainerAddTagFunction = void(__fastcall*)(GameplayTagContainer*, const GameplayTag*);
+    using SolveForVoiceoverPresetFunction = void(__fastcall*)(int*, UObject*, const TArray<GameplayTag>*);
+    using GetSlotInstanceFunction = UObject*(__fastcall*)(UObject*, const GameplayTag*);
+    using GetPartDefinitionFromPartIdFunction = const UObject*(__fastcall*)(const FPrimaryAssetId*);
 
     std::array<FPrimaryAssetId, kTargetSpecs.size()> g_target_ids{};
+    FPrimaryAssetId g_voice_source_id{};
     GameplayTag g_human_species_tag{};
     GameplayTag g_mdo_tag{};
     GameplayTag g_cly_name_tag{};
@@ -126,13 +152,21 @@ namespace
 
     std::uint64_t g_does_part_trampoline{};
     std::uint64_t g_filter_trampoline{};
+    std::uint64_t g_voice_solver_trampoline{};
     std::unique_ptr<PLH::x64Detour> g_does_part_hook{};
     std::unique_ptr<PLH::x64Detour> g_filter_hook{};
+    std::unique_ptr<PLH::x64Detour> g_voice_solver_hook{};
     bool g_hooks_active{};
     std::atomic<std::uint32_t> g_seen_compatibility_mask{};
     std::atomic<std::uint32_t> g_pending_compatibility_mask{};
     std::atomic<std::uint32_t> g_seen_catalogue_mask{};
     std::atomic<std::uint32_t> g_pending_catalogue_mask{};
+    std::atomic<std::uint32_t> g_seen_voice_mask{};
+    std::atomic<std::uint32_t> g_pending_voice_mask{};
+    std::atomic<int> g_voice_preset{-1};
+    std::atomic<bool> g_voice_preset_log_pending{};
+    std::atomic<bool> g_voice_source_failure_seen{};
+    std::atomic<bool> g_voice_source_failure_log_pending{};
 
     auto record_once(std::atomic<std::uint32_t>& seen,
                      std::atomic<std::uint32_t>& pending,
@@ -192,7 +226,10 @@ namespace
             !bytes_match(base, image_size, kFilterAssetDataByTagsRva, kFilterAssetDataByTagsBytes) ||
             !bytes_match(base, image_size, kGameplayTagContainerCopyCtorRva, kGameplayTagContainerCopyCtorBytes) ||
             !bytes_match(base, image_size, kGameplayTagContainerDtorRva, kGameplayTagContainerDtorBytes) ||
-            !bytes_match(base, image_size, kGameplayTagContainerAddTagRva, kGameplayTagContainerAddTagBytes))
+            !bytes_match(base, image_size, kGameplayTagContainerAddTagRva, kGameplayTagContainerAddTagBytes) ||
+            !bytes_match(base, image_size, kSolveForVoiceoverPresetRva, kSolveForVoiceoverPresetBytes) ||
+            !bytes_match(base, image_size, kGetSlotInstanceRva, kGetSlotInstanceBytes) ||
+            !bytes_match(base, image_size, kGetPartDefinitionFromPartIdRva, kGetPartDefinitionFromPartIdBytes))
         {
             reason = "pdb-target-byte-mismatch";
             return false;
@@ -237,6 +274,85 @@ namespace
             }
         }
         return g_target_ids.size();
+    }
+
+    auto is_mando_helmet_target(std::size_t index) -> bool
+    {
+        return index == 4 || index == 10 || index == 16 || index == 18;
+    }
+
+    auto read_slot_id(const UObject* slot) -> FPrimaryAssetId
+    {
+        FPrimaryAssetId id{};
+        std::memcpy(&id,
+                    reinterpret_cast<const void*>(reinterpret_cast<std::uintptr_t>(slot) +
+                                                  kSlotPrimaryAssetIdOffset),
+                    sizeof(id));
+        return id;
+    }
+
+    // The shipped Mandalorian helmet definitions contain no HelmetVO fragment.
+    // Resolve the value from a known stock human helmet instead of hard-coding
+    // an undocumented Wwise configuration value.
+    auto resolve_stock_helmet_voice_preset() -> int
+    {
+        const int cached = g_voice_preset.load(std::memory_order_acquire);
+        if (cached >= 0)
+        {
+            return cached;
+        }
+
+        const auto get_part = reinterpret_cast<GetPartDefinitionFromPartIdFunction>(
+            g_runtime.base + kGetPartDefinitionFromPartIdRva);
+        const UObject* source_const = get_part(&g_voice_source_id);
+        auto* source = const_cast<UObject*>(source_const);
+        if (source == nullptr || !UObject::IsReal(source) || source->IsUnreachable())
+        {
+            if (!g_voice_source_failure_seen.exchange(true, std::memory_order_relaxed))
+            {
+                g_voice_source_failure_log_pending.store(true, std::memory_order_release);
+            }
+            return -1;
+        }
+
+        auto* fragments = source->GetValuePtrByPropertyNameInChain<TArray<UObject*>>(STR("Fragments"));
+        if (fragments == nullptr)
+        {
+            if (!g_voice_source_failure_seen.exchange(true, std::memory_order_relaxed))
+            {
+                g_voice_source_failure_log_pending.store(true, std::memory_order_release);
+            }
+            return -1;
+        }
+
+        for (auto* fragment : *fragments)
+        {
+            if (fragment == nullptr || !UObject::IsReal(fragment) || fragment->IsUnreachable() ||
+                fragment->GetClassPrivate() == nullptr ||
+                fragment->GetClassPrivate()->GetFName().ToString() != STR("CustomizationFragmentHelmetVO"))
+            {
+                continue;
+            }
+
+            const auto* value = fragment->GetValuePtrByPropertyNameInChain<int>(STR("HelmetFxRtpcValue"));
+            if (value == nullptr || *value < 0)
+            {
+                break;
+            }
+
+            int expected = -1;
+            if (g_voice_preset.compare_exchange_strong(expected, *value, std::memory_order_release))
+            {
+                g_voice_preset_log_pending.store(true, std::memory_order_release);
+            }
+            return g_voice_preset.load(std::memory_order_acquire);
+        }
+
+        if (!g_voice_source_failure_seen.exchange(true, std::memory_order_relaxed))
+        {
+            g_voice_source_failure_log_pending.store(true, std::memory_order_release);
+        }
+        return -1;
     }
 
     auto array_contains(const TArray<FPrimaryAssetId>& ids, const FPrimaryAssetId& target) -> bool
@@ -338,30 +454,81 @@ namespace
         }
     }
 
-    class ZeroCompanyMandoWardrobe final : public RC::CppUserModBase
+    auto hook_solve_for_voiceover_preset(int* output,
+                                         UObject* customization,
+                                         const TArray<GameplayTag>* slot_tags) -> void
+    {
+        const auto original = reinterpret_cast<SolveForVoiceoverPresetFunction>(g_voice_solver_trampoline);
+        if (original == nullptr)
+        {
+            return;
+        }
+
+        original(output, customization, slot_tags);
+        if (output == nullptr || *output != -1 || customization == nullptr || slot_tags == nullptr)
+        {
+            return;
+        }
+
+        const auto get_slot = reinterpret_cast<GetSlotInstanceFunction>(g_runtime.base + kGetSlotInstanceRva);
+        for (const auto& slot_tag : *slot_tags)
+        {
+            if (slot_tag.tag_name.IsNone())
+            {
+                continue;
+            }
+            UObject* slot = get_slot(customization, &slot_tag);
+            if (slot == nullptr || !UObject::IsReal(slot) || slot->IsUnreachable())
+            {
+                continue;
+            }
+
+            const FPrimaryAssetId selected_id = read_slot_id(slot);
+            const std::size_t index = target_index(selected_id);
+            if (!is_mando_helmet_target(index))
+            {
+                continue;
+            }
+
+            const int preset = resolve_stock_helmet_voice_preset();
+            if (preset >= 0)
+            {
+                *output = preset;
+                record_once(g_seen_voice_mask, g_pending_voice_mask, index);
+            }
+            return;
+        }
+    }
+
+    class ZeroCompanyMandoWardrobeMod final : public RC::CppUserModBase
     {
       public:
-        ZeroCompanyMandoWardrobe()
+        ZeroCompanyMandoWardrobeMod()
         {
 #if defined(ZERO_COMPANY_MANDO_WARDROBE_INIT_CANARY)
             ModName = STR("ZeroCompanyMandoWardrobeInitCanary");
 #else
             ModName = STR("ZeroCompanyMandoWardrobe");
 #endif
-            ModVersion = STR("0.3.0");
-            ModDescription = STR("Exact-ID Man001/Man002/Cly wardrobe compatibility for human characters in Zero Company build 24874058");
+            ModVersion = STR("0.4.0");
+            ModDescription = STR("Colourable Man001/Man002/Cly human wardrobe with animation-safe Mandalorian helmet fitting for Zero Company build 24874058");
             ModAuthors = STR("Sternab");
 #if defined(ZERO_COMPANY_MANDO_WARDROBE_INIT_CANARY)
             RC::Output::send<RC::LogLevel::Verbose>(
                 STR("[ZeroCompanyMandoWardrobe] loaded init_canary=true hooks_pending=false mutation_capability=false\n"));
 #else
             RC::Output::send<RC::LogLevel::Verbose>(
-                STR("[ZeroCompanyMandoWardrobe] loaded scope=exact-Man001A-Man002A-Cly-all-human hooks_pending=true global_validation_bypass=false unequip_flags_untouched=true authored_only_excluded=true exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 human_species_gate=true\n"));
+                STR("[ZeroCompanyMandoWardrobe] loaded scope=exact-Man001A-Man002A-Cly-all-human helmet_fit=Man001-Man002-head-pivot-compensated hooks_pending=true global_validation_bypass=false unequip_flags_untouched=true authored_only_excluded=true exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 human_species_gate=true\n"));
 #endif
         }
 
-        ~ZeroCompanyMandoWardrobe() override
+        ~ZeroCompanyMandoWardrobeMod() override
         {
+            ::ZeroCompanyMandoWardrobe::HelmetFit::shutdown();
+            if (g_voice_solver_hook)
+            {
+                g_voice_solver_hook->unHook();
+            }
             if (g_filter_hook)
             {
                 g_filter_hook->unHook();
@@ -372,6 +539,8 @@ namespace
             }
             g_filter_hook.reset();
             g_does_part_hook.reset();
+            g_voice_solver_hook.reset();
+            g_voice_solver_trampoline = 0;
             g_hooks_active = false;
             RC::Output::send<RC::LogLevel::Verbose>(STR("[ZeroCompanyMandoWardrobe] unloaded hooks_active=false\n"));
         }
@@ -396,6 +565,10 @@ namespace
                     FName(kTargetSpecs[index].asset_name, RC::Unreal::FNAME_Add),
                 };
             }
+            g_voice_source_id = FPrimaryAssetId{
+                FPrimaryAssetType{asset_type_name},
+                FName(STR("CPD_H_Outfit_Clo008_HELM_TintB"), RC::Unreal::FNAME_Add),
+            };
 
             const FName human_species_name(STR("br.Customization.Part.Character.Species.Human"), RC::Unreal::FNAME_Find);
             const FName mdo_name(STR("br.Customization.Accepts.Outfit.Mdo"), RC::Unreal::FNAME_Find);
@@ -446,15 +619,62 @@ namespace
                 return;
             }
 
+            g_voice_solver_hook = std::make_unique<PLH::x64Detour>(
+                g_runtime.base + kSolveForVoiceoverPresetRva,
+                reinterpret_cast<std::uint64_t>(&hook_solve_for_voiceover_preset),
+                &g_voice_solver_trampoline);
+            if (!g_voice_solver_hook->hook() || g_voice_solver_trampoline == 0)
+            {
+                g_filter_hook->unHook();
+                g_does_part_hook->unHook();
+                g_voice_solver_hook.reset();
+                g_filter_hook.reset();
+                g_does_part_hook.reset();
+                g_filter_trampoline = 0;
+                g_does_part_trampoline = 0;
+                RC::Output::send<RC::LogLevel::Error>(
+                    STR("[ZeroCompanyMandoWardrobe] REFUSED reason=helmet-voice-hook-install-failed hooks_active=false\n"));
+                return;
+            }
+
+            if (!::ZeroCompanyMandoWardrobe::HelmetFit::initialize())
+            {
+                g_voice_solver_hook->unHook();
+                g_filter_hook->unHook();
+                g_does_part_hook->unHook();
+                g_voice_solver_hook.reset();
+                g_filter_hook.reset();
+                g_does_part_hook.reset();
+                g_voice_solver_trampoline = 0;
+                g_filter_trampoline = 0;
+                g_does_part_trampoline = 0;
+                RC::Output::send<RC::LogLevel::Error>(
+                    STR("[ZeroCompanyMandoWardrobe] REFUSED reason=helmet-fit-initialization-failed hooks_active=false\n"));
+                return;
+            }
+
             g_hooks_active = true;
             RC::Output::send<RC::LogLevel::Verbose>(
-                STR("[ZeroCompanyMandoWardrobe] READY hooks_active=true build=24874058 requirement_policy=human-species-gate-then-original-check-with-temporary-Mdo-and-exact-Cly-tags exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 KervisNoHelm=false unequip_flags_untouched=true global_validation_bypass=false\n"));
+                STR("[ZeroCompanyMandoWardrobe] READY hooks_active=true build=24874058 requirement_policy=human-species-gate-then-original-check-with-temporary-Mdo-and-exact-Cly-tags exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 helmet_voice_policy=original-first-then-exact-Mando-ID-with-stock-authored-preset helmet_fit=Man001-Man002-head-pivot-compensated-horizontal-1.06 failure_isolation=per-component-retry face_visibility_mutation=false KervisNoHelm=false unequip_flags_untouched=true global_validation_bypass=false\n"));
         }
 
         auto on_update() -> void override
         {
+            ::ZeroCompanyMandoWardrobe::HelmetFit::update();
             const auto compatibility_mask = g_pending_compatibility_mask.exchange(0, std::memory_order_acquire);
             const auto catalogue_mask = g_pending_catalogue_mask.exchange(0, std::memory_order_acquire);
+            const auto voice_mask = g_pending_voice_mask.exchange(0, std::memory_order_acquire);
+            if (g_voice_preset_log_pending.exchange(false, std::memory_order_acquire))
+            {
+                RC::Output::send<RC::LogLevel::Verbose>(
+                    STR("[ZeroCompanyMandoWardrobe] helmet_voice_source_resolved asset=CPD_H_Outfit_Clo008_HELM_TintB fragment=CustomizationFragmentHelmetVO preset={}\n"),
+                    g_voice_preset.load(std::memory_order_acquire));
+            }
+            if (g_voice_source_failure_log_pending.exchange(false, std::memory_order_acquire))
+            {
+                RC::Output::send<RC::LogLevel::Warning>(
+                    STR("[ZeroCompanyMandoWardrobe] helmet_voice_source_pending asset=CPD_H_Outfit_Clo008_HELM_TintB behavior=leave-original-result-unchanged retry=true\n"));
+            }
             for (std::size_t index = 0; index < kTargetSpecs.size(); ++index)
             {
                 const auto bit = std::uint32_t{1} << static_cast<std::uint32_t>(index);
@@ -470,6 +690,13 @@ namespace
                         STR("[ZeroCompanyMandoWardrobe] catalogue_tile_added asset={} ordinary_view_model=true\n"),
                         kTargetSpecs[index].asset_name);
                 }
+                if ((voice_mask & bit) != 0)
+                {
+                    RC::Output::send<RC::LogLevel::Verbose>(
+                        STR("[ZeroCompanyMandoWardrobe] helmet_voice_compatibility_applied asset={} preset={} original_solver_result=none exact_id=true\n"),
+                        kTargetSpecs[index].asset_name,
+                        g_voice_preset.load(std::memory_order_acquire));
+                }
             }
         }
     };
@@ -481,7 +708,7 @@ extern "C"
 {
     ZERO_COMPANY_MANDO_WARDROBE_API RC::CppUserModBase* start_mod()
     {
-        return new ZeroCompanyMandoWardrobe();
+        return new ZeroCompanyMandoWardrobeMod();
     }
 
     ZERO_COMPANY_MANDO_WARDROBE_API void uninstall_mod(RC::CppUserModBase* mod)

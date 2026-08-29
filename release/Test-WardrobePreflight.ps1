@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$GameBin = 'C:\Program Files (x86)\Steam\steamapps\common\Star Wars Zero Company\SWZeroCompany\Binaries\Win64'
+    [string]$GameBin
 )
 
 Set-StrictMode -Version Latest
@@ -43,4 +43,4 @@ Write-Host "PASS retail executable $exeHash"
 Write-Host "PASS compatibility UE4SS $ue4ssHash"
 Write-Host "PASS proven wardrobe DLL $dllHash"
 Write-Host 'PASS exact wardrobe-only activation: 1 of 1 enabled entry'
-Write-Host 'PREFLIGHT COMPLETE — the wardrobe is the only enabled UE4SS mod.'
+Write-Host 'PREFLIGHT COMPLETE - the wardrobe is the only enabled UE4SS mod.'

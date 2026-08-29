@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$GameBin = 'C:\Program Files (x86)\Steam\steamapps\common\Star Wars Zero Company\SWZeroCompany\Binaries\Win64',
+    [string]$GameBin,
     [string]$BackupRoot,
     [switch]$RemoveFiles,
     [switch]$StockOutfitConfirmed
