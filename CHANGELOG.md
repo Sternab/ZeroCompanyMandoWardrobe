@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2 — 2026-09-02
+
+- Increases only the Man001 helmet's horizontal render-palette fit from `1.06` to `1.07`, removing the remaining minor cheek intersection without changing its height or attachment pivot.
+- Keeps Man002 at its previously tested `1.06` horizontal fit.
+- Moves wardrobe injection to the final customization-definition catalogue seam and continues to append only the exact sixteen whitelisted parts after the game's own compatibility checks.
+- Adds constant-time live-object validation and guarded native registry calls to make late scene transitions and teardown safer.
+- Replaces the public script-based package with a direct `Win64` drop-in ZIP and an `enabled.txt` activation marker. No PowerShell or command scripts are required.
+
 ## 0.4.1 — 2026-08-29
 
 - Replaces the v0.4.0 scene-component helmet fit, which could leave a helmet behind during mission or cutscene animation, with a render-palette-only fit.

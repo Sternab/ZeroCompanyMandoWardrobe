@@ -1,22 +1,22 @@
-# Zero Company Mandalorian Wardrobe v0.4.1
+# Zero Company Mandalorian Wardrobe v0.4.2
 
-Helmet-fit hotfix for the Windows Steam build `24874058` of **Star Wars: Zero Company**.
+Wardrobe and helmet-fit update for the Windows Steam build `24874058` of **Star Wars: Zero Company**.
 
 ## What changed
 
-- Replaces the v0.4.0 scene-component fit that could leave a helmet behind during mission and cutscene animations.
-- Fits the exact Man001/Man002 helmet meshes in their final current and previous render palettes around the animated head pivot.
-- Never moves helmet components, changes attachments, or hides character faces.
+- Slightly enlarges only the Man001 helmet horizontally to remove the remaining cheek intersection. Man002 keeps its previously tested fit.
+- Keeps the render-palette implementation that follows movement, missions, and cutscenes without moving helmet components or changing attachments.
 - Retains all sixteen colourable Man001, Man002, and Cly wardrobe choices, authored backpack dependencies, and helmet voice effects.
-- Updates the packaged runtime collector for the new implementation.
+- Strengthens catalogue injection and live-object validation during scene changes and shutdown.
+- Replaces the old script-based package with a standard direct-install mod ZIP.
 
-The new fit completed a test covering Den movement, dialogues, cutscenes, and a mission with 405,706 current-palette and 815 previous-palette applications, zero ABI refusals, no legacy component-transform events, and no face-visibility mutation.
+The underlying render-palette fit completed extended testing covering Den movement, dialogues, cutscenes, missions, and a full campaign. The v0.4.2 change is deliberately limited to a one-percent horizontal adjustment for Man001.
 
-## Requirement
+## Install or update
 
 Install [UE4SS for Star Wars Zero Company v1.0](https://www.nexusmods.com/starwarszerocompany/mods/9) first. UE4SS is required and is not bundled with this release.
 
-Download `ZeroCompanyMandoWardrobe-v0.4.1-build24874058.zip`, extract it, and double-click `Install-Wardrobe.cmd`. The installer auto-detects Steam libraries and verifies the supported game, UE4SS, and mod builds before changing anything.
+Download `ZeroCompanyMandoWardrobe-v0.4.2-build24874058.zip`, open it, and drag its `ue4ss` folder into the game's `SWZeroCompany\Binaries\Win64` folder. Allow Windows to merge folders and replace the older mod DLL when updating. No PowerShell or command prompt is required.
 
 ## Known limitations
 

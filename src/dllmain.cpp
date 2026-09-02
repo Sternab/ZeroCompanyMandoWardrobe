@@ -33,7 +33,7 @@ namespace
     static_assert(sizeof(FPrimaryAssetId) == 16, "Zero Company wardrobe mod requires a 16-byte FPrimaryAssetId ABI");
 
     constexpr std::uintptr_t kDoesPartMeetRequirementsRva = 0x63C6400;
-    constexpr std::uintptr_t kFilterAssetDataByTagsRva = 0x63D1C20;
+    constexpr std::uintptr_t kGetCustomizationPartDefinitionsRva = 0x63C54D0;
     constexpr std::uintptr_t kGameplayTagContainerCopyCtorRva = 0x40F7B20;
     constexpr std::uintptr_t kGameplayTagContainerDtorRva = 0x16C2E60;
     constexpr std::uintptr_t kGameplayTagContainerAddTagRva = 0x41017A0;
@@ -49,9 +49,9 @@ namespace
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74,
         0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18, 0x4C,
     };
-    constexpr std::array<std::uint8_t, 16> kFilterAssetDataByTagsBytes{
-        0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57,
-        0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+    constexpr std::array<std::uint8_t, 16> kGetCustomizationPartDefinitionsBytes{
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C,
+        0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48,
     };
     constexpr std::array<std::uint8_t, 16> kGameplayTagContainerCopyCtorBytes{
         0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x33, 0xC0,
@@ -128,6 +128,8 @@ namespace
         {STR("CPD_H_Outfit_ClyB_HELM"), true, true},
     }};
 
+    static_assert(kTargetSpecs.size() <= 32, "Wardrobe event masks support at most 32 exact target IDs");
+
     struct RuntimeIdentity
     {
         std::uintptr_t base{};
@@ -135,7 +137,7 @@ namespace
     };
 
     using DoesPartMeetRequirementsFunction = bool(__fastcall*)(const FPrimaryAssetId*, const GameplayTagContainer*);
-    using FilterAssetDataByTagsFunction = void(__fastcall*)(void*, const GameplayTagContainer*, TArray<FPrimaryAssetId>*);
+    using GetCustomizationPartDefinitionsFunction = void(__fastcall*)(const GameplayTagContainer*, TArray<UObject*>*);
     using GameplayTagContainerCopyCtorFunction = GameplayTagContainer*(__fastcall*)(GameplayTagContainer*, const GameplayTagContainer*);
     using GameplayTagContainerDtorFunction = void(__fastcall*)(GameplayTagContainer*);
     using GameplayTagContainerAddTagFunction = void(__fastcall*)(GameplayTagContainer*, const GameplayTag*);
@@ -151,10 +153,10 @@ namespace
     RuntimeIdentity g_runtime{};
 
     std::uint64_t g_does_part_trampoline{};
-    std::uint64_t g_filter_trampoline{};
+    std::uint64_t g_part_definitions_trampoline{};
     std::uint64_t g_voice_solver_trampoline{};
     std::unique_ptr<PLH::x64Detour> g_does_part_hook{};
-    std::unique_ptr<PLH::x64Detour> g_filter_hook{};
+    std::unique_ptr<PLH::x64Detour> g_part_definitions_hook{};
     std::unique_ptr<PLH::x64Detour> g_voice_solver_hook{};
     bool g_hooks_active{};
     std::atomic<std::uint32_t> g_seen_compatibility_mask{};
@@ -223,7 +225,7 @@ namespace
 
         const auto image_size = static_cast<std::uintptr_t>(nt->OptionalHeader.SizeOfImage);
         if (!bytes_match(base, image_size, kDoesPartMeetRequirementsRva, kDoesPartMeetRequirementsBytes) ||
-            !bytes_match(base, image_size, kFilterAssetDataByTagsRva, kFilterAssetDataByTagsBytes) ||
+            !bytes_match(base, image_size, kGetCustomizationPartDefinitionsRva, kGetCustomizationPartDefinitionsBytes) ||
             !bytes_match(base, image_size, kGameplayTagContainerCopyCtorRva, kGameplayTagContainerCopyCtorBytes) ||
             !bytes_match(base, image_size, kGameplayTagContainerDtorRva, kGameplayTagContainerDtorBytes) ||
             !bytes_match(base, image_size, kGameplayTagContainerAddTagRva, kGameplayTagContainerAddTagBytes) ||
@@ -355,11 +357,11 @@ namespace
         return -1;
     }
 
-    auto array_contains(const TArray<FPrimaryAssetId>& ids, const FPrimaryAssetId& target) -> bool
+    auto array_contains(const TArray<UObject*>& objects, const UObject* target) -> bool
     {
-        for (const auto& id : ids)
+        for (const auto* object : objects)
         {
-            if (ids_equal(id, target))
+            if (object == target)
             {
                 return true;
             }
@@ -423,32 +425,43 @@ namespace
         return compatible;
     }
 
-    auto hook_filter_asset_data_by_tags(void* subsystem,
-                                        const GameplayTagContainer* owned_tags,
-                                        TArray<FPrimaryAssetId>* output) -> void
+    auto hook_get_customization_part_definitions(const GameplayTagContainer* owned_tags,
+                                                 TArray<UObject*>* output) -> void
     {
-        const auto original = reinterpret_cast<FilterAssetDataByTagsFunction>(g_filter_trampoline);
+        const auto original = reinterpret_cast<GetCustomizationPartDefinitionsFunction>(
+            g_part_definitions_trampoline);
         if (original == nullptr)
         {
             return;
         }
 
-        original(subsystem, owned_tags, output);
-        if (owned_tags == nullptr || output == nullptr ||
-            !container_has_exact_tag(*owned_tags, g_human_species_tag))
+        original(owned_tags, output);
+        if (owned_tags == nullptr || output == nullptr)
         {
             return;
         }
 
+        if (!container_has_exact_tag(*owned_tags, g_human_species_tag))
+        {
+            return;
+        }
+
+        const auto get_part = reinterpret_cast<GetPartDefinitionFromPartIdFunction>(
+            g_runtime.base + kGetPartDefinitionFromPartIdRva);
         for (std::size_t index = 0; index < kTargetSpecs.size(); ++index)
         {
-            if (!kTargetSpecs[index].visible_tile || array_contains(*output, g_target_ids[index]))
+            if (!kTargetSpecs[index].visible_tile ||
+                !compatible_original_check(g_target_ids[index], *owned_tags, index))
             {
                 continue;
             }
-            if (compatible_original_check(g_target_ids[index], *owned_tags, index))
+
+            const UObject* definition_const = get_part(&g_target_ids[index]);
+            auto* definition = const_cast<UObject*>(definition_const);
+            if (definition != nullptr && UObject::IsReal(definition) && !definition->IsUnreachable() &&
+                !array_contains(*output, definition))
             {
-                output->Add(g_target_ids[index]);
+                output->Add(definition);
                 record_once(g_seen_catalogue_mask, g_pending_catalogue_mask, index);
             }
         }
@@ -510,7 +523,7 @@ namespace
 #else
             ModName = STR("ZeroCompanyMandoWardrobe");
 #endif
-            ModVersion = STR("0.4.1");
+            ModVersion = STR("0.4.2");
             ModDescription = STR("Colourable Man001/Man002/Cly human wardrobe with a head-pivot render-palette Mandalorian helmet fit for Zero Company build 24874058");
             ModAuthors = STR("Sternab");
 #if defined(ZERO_COMPANY_MANDO_WARDROBE_INIT_CANARY)
@@ -518,7 +531,7 @@ namespace
                 STR("[ZeroCompanyMandoWardrobe] loaded init_canary=true hooks_pending=false mutation_capability=false\n"));
 #else
             RC::Output::send<RC::LogLevel::Verbose>(
-                STR("[ZeroCompanyMandoWardrobe] loaded scope=exact-Man001A-Man002A-Cly-all-human helmet_fit=Man001-Man002-head-pivot-render-palette-horizontal-1.06 matrix_mutation=true scene_transform_writes=false face_visibility_mutation=false hooks_pending=true global_validation_bypass=false unequip_flags_untouched=true authored_only_excluded=true exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 human_species_gate=true\n"));
+                STR("[ZeroCompanyMandoWardrobe] loaded scope=exact-Man001A-Man002A-Cly-all-human catalogue_seam=GetCustomizationPartDefinitions-post helmet_fit=Man001-1.07-Man002-1.06-head-pivot-render-palette-horizontal matrix_mutation=true scene_transform_writes=false face_visibility_mutation=false hooks_pending=true global_validation_bypass=false unequip_flags_untouched=true authored_only_excluded=true exact_part_ids=19 visible_part_candidate_ids=16 hidden_pack_ids=3 human_species_gate=true\n"));
 #endif
         }
 
@@ -529,18 +542,20 @@ namespace
             {
                 g_voice_solver_hook->unHook();
             }
-            if (g_filter_hook)
+            if (g_part_definitions_hook)
             {
-                g_filter_hook->unHook();
+                g_part_definitions_hook->unHook();
             }
             if (g_does_part_hook)
             {
                 g_does_part_hook->unHook();
             }
-            g_filter_hook.reset();
+            g_part_definitions_hook.reset();
             g_does_part_hook.reset();
             g_voice_solver_hook.reset();
             g_voice_solver_trampoline = 0;
+            g_part_definitions_trampoline = 0;
+            g_does_part_trampoline = 0;
             g_hooks_active = false;
             RC::Output::send<RC::LogLevel::Verbose>(STR("[ZeroCompanyMandoWardrobe] unloaded hooks_active=false\n"));
         }
@@ -604,15 +619,15 @@ namespace
                 return;
             }
 
-            g_filter_hook = std::make_unique<PLH::x64Detour>(
-                g_runtime.base + kFilterAssetDataByTagsRva,
-                reinterpret_cast<std::uint64_t>(&hook_filter_asset_data_by_tags),
-                &g_filter_trampoline);
-            if (!g_filter_hook->hook() || g_filter_trampoline == 0)
+            g_part_definitions_hook = std::make_unique<PLH::x64Detour>(
+                g_runtime.base + kGetCustomizationPartDefinitionsRva,
+                reinterpret_cast<std::uint64_t>(&hook_get_customization_part_definitions),
+                &g_part_definitions_trampoline);
+            if (!g_part_definitions_hook->hook() || g_part_definitions_trampoline == 0)
             {
                 g_does_part_hook->unHook();
                 g_does_part_hook.reset();
-                g_filter_hook.reset();
+                g_part_definitions_hook.reset();
                 g_does_part_trampoline = 0;
                 RC::Output::send<RC::LogLevel::Error>(
                     STR("[ZeroCompanyMandoWardrobe] REFUSED reason=catalogue-hook-install-failed hooks_active=false\n"));
@@ -625,12 +640,12 @@ namespace
                 &g_voice_solver_trampoline);
             if (!g_voice_solver_hook->hook() || g_voice_solver_trampoline == 0)
             {
-                g_filter_hook->unHook();
+                g_part_definitions_hook->unHook();
                 g_does_part_hook->unHook();
                 g_voice_solver_hook.reset();
-                g_filter_hook.reset();
+                g_part_definitions_hook.reset();
                 g_does_part_hook.reset();
-                g_filter_trampoline = 0;
+                g_part_definitions_trampoline = 0;
                 g_does_part_trampoline = 0;
                 RC::Output::send<RC::LogLevel::Error>(
                     STR("[ZeroCompanyMandoWardrobe] REFUSED reason=helmet-voice-hook-install-failed hooks_active=false\n"));
@@ -640,13 +655,13 @@ namespace
             if (!::ZeroCompanyMandoWardrobe::HelmetRenderFit::initialize())
             {
                 g_voice_solver_hook->unHook();
-                g_filter_hook->unHook();
+                g_part_definitions_hook->unHook();
                 g_does_part_hook->unHook();
                 g_voice_solver_hook.reset();
-                g_filter_hook.reset();
+                g_part_definitions_hook.reset();
                 g_does_part_hook.reset();
                 g_voice_solver_trampoline = 0;
-                g_filter_trampoline = 0;
+                g_part_definitions_trampoline = 0;
                 g_does_part_trampoline = 0;
                 RC::Output::send<RC::LogLevel::Error>(
                     STR("[ZeroCompanyMandoWardrobe] REFUSED reason=helmet-render-fit-initialization-failed hooks_active=false\n"));
@@ -655,7 +670,7 @@ namespace
 
             g_hooks_active = true;
             RC::Output::send<RC::LogLevel::Verbose>(
-                STR("[ZeroCompanyMandoWardrobe] READY hooks_active=true build=24874058 requirement_policy=human-species-gate-then-original-check-with-temporary-Mdo-and-exact-Cly-tags exact_ids=19 visible_candidate_ids=16 hidden_pack_ids=3 helmet_voice_policy=original-first-then-exact-Mando-ID-with-stock-authored-preset helmet_fit=Man001-Man002-head-pivot-render-palette-horizontal-1.06 matrix_mutation=true scene_transform_writes=false face_visibility_mutation=false KervisNoHelm=false unequip_flags_untouched=true global_validation_bypass=false\n"));
+                STR("[ZeroCompanyMandoWardrobe] READY hooks_active=true build=24874058 requirement_policy=human-parts-original-check-with-temporary-Mdo-and-exact-Cly-tags exact_part_ids=19 visible_part_candidate_ids=16 hidden_pack_ids=3 catalogue_seam=GetCustomizationPartDefinitions-post helmet_voice_policy=original-first-then-exact-Mando-ID-with-stock-authored-preset helmet_fit=Man001-1.07-Man002-1.06-head-pivot-render-palette-horizontal registry_pointer_validation=GUObjectArray-O1 native_registry_calls=SEH-guarded matrix_mutation=true scene_transform_writes=false face_visibility_mutation=false KervisNoHelm=false unequip_flags_untouched=true global_validation_bypass=false\n"));
         }
 
         auto on_update() -> void override

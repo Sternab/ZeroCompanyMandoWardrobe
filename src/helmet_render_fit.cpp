@@ -14,6 +14,7 @@
 #include <DynamicOutput/DynamicOutput.hpp>
 #include <Unreal/NameTypes.hpp>
 #include <Unreal/UObject.hpp>
+#include <Unreal/UObjectArray.hpp>
 #include <Unreal/UObjectGlobals.hpp>
 #include <polyhook2/Detour/x64Detour.hpp>
 
@@ -22,6 +23,7 @@
 namespace
 {
     using RC::Unreal::FName;
+    using RC::Unreal::FUObjectArray;
     using RC::Unreal::UObject;
 
     // Exact retail build 24874058 identities and symbols resolved from the
@@ -42,8 +44,10 @@ namespace
     constexpr std::size_t kMaximumTargetComponents = 128;
     constexpr std::uint8_t kMaximumScanAttempts = 4;
     constexpr std::uint32_t kSummaryIntervalFrames = 120;
-    constexpr double kFitScaleX = 1.06;
-    constexpr double kFitScaleY = 1.06;
+    constexpr double kMan001FitScaleX = 1.07;
+    constexpr double kMan001FitScaleY = 1.07;
+    constexpr double kMan002FitScaleX = 1.06;
+    constexpr double kMan002FitScaleY = 1.06;
     constexpr double kFitScaleZ = 1.00;
     // The read-only canary observed 9,605 exact current-palette calls and 32
     // exact previous-palette calls. Exact-retail disassembly then confirmed
@@ -199,6 +203,8 @@ namespace
     struct ScanResult
     {
         std::size_t component_instances{};
+        std::size_t invalid_components{};
+        std::size_t guarded_native_faults{};
         std::size_t exact_target_components{};
         std::size_t published_assets{};
         std::size_t unresolved_assets{};
@@ -393,24 +399,97 @@ namespace
         return true;
     }
 
+    // FindAllOf intentionally includes objects pending teardown. Validate the
+    // raw pointer against its current GUObjectArray slot before calling any
+    // game method. This is O(1), unlike UObject::IsReal's full-array search.
+    auto is_live_uobject_pointer(UObject* object) noexcept -> bool
+    {
+        if (object == nullptr)
+        {
+            return false;
+        }
+        __try
+        {
+            const auto index = object->GetInternalIndex();
+            auto* item = index < 0 ? nullptr : FUObjectArray::IndexToObject(index);
+            return item != nullptr && item->GetUObject() == object &&
+                   item->IsValid(false) && !item->IsUnreachable();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
+    auto guarded_get_skeletal_mesh(UObject* component,
+                                   UObject*& mesh) noexcept -> bool
+    {
+        mesh = nullptr;
+        __try
+        {
+            const auto get_mesh = reinterpret_cast<GetSkeletalMeshAssetFunction>(
+                g_runtime.base + kGetSkeletalMeshAssetRva);
+            mesh = get_mesh(component);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            mesh = nullptr;
+            return false;
+        }
+    }
+
+    auto guarded_get_num_bones(const UObject* component,
+                               std::int32_t& bone_count) noexcept -> bool
+    {
+        bone_count = 0;
+        __try
+        {
+            const auto get_num_bones = reinterpret_cast<GetNumBonesFunction>(
+                g_runtime.base + kGetNumBonesRva);
+            bone_count = get_num_bones(component);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            bone_count = 0;
+            return false;
+        }
+    }
+
+    auto guarded_get_bone_name(const UObject* component,
+                               FName* name,
+                               std::int32_t index) noexcept -> bool
+    {
+        __try
+        {
+            const auto get_bone_name = reinterpret_cast<GetBoneNameFunction>(
+                g_runtime.base + kGetBoneNameRva);
+            get_bone_name(component, name, index);
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+    }
+
     auto resolve_unique_head_bone(UObject* component,
                                   std::int32_t& head_bone_index,
                                   std::int32_t& bone_count) -> bool
     {
         head_bone_index = -1;
         bone_count = 0;
-        if (component == nullptr || g_runtime.base == 0)
+        if (g_runtime.base == 0 || !is_live_uobject_pointer(component))
         {
             return false;
         }
-
-        const auto get_num_bones = reinterpret_cast<GetNumBonesFunction>(
-            g_runtime.base + kGetNumBonesRva);
-        const auto get_bone_name = reinterpret_cast<GetBoneNameFunction>(
-            g_runtime.base + kGetBoneNameRva);
         // The exact PDB RVAs are USkinnedMeshComponent methods.  The asset
         // pointer is registered separately and must never be passed here.
-        bone_count = get_num_bones(component);
+        if (!guarded_get_num_bones(component, bone_count))
+        {
+            return false;
+        }
         if (bone_count <= 0 || bone_count > kMaximumBoneCount)
         {
             return false;
@@ -420,7 +499,10 @@ namespace
         for (std::int32_t index = 0; index < bone_count; ++index)
         {
             FName name{};
-            get_bone_name(component, &name, index);
+            if (!guarded_get_bone_name(component, &name, index))
+            {
+                return false;
+            }
             const auto bone_name = name.ToString();
             if (same_name_case_insensitive(bone_name, STR("head")))
             {
@@ -467,17 +549,25 @@ namespace
             return result;
         }
 
-        const auto get_mesh = reinterpret_cast<GetSkeletalMeshAssetFunction>(
-            g_runtime.base + kGetSkeletalMeshAssetRva);
         std::array<RegistryCandidate, 2> candidates{};
         for (UObject* component : components)
         {
-            if (component == nullptr || component->IsUnreachable())
+            if (!is_live_uobject_pointer(component))
             {
+                ++result.invalid_components;
                 continue;
             }
 
-            UObject* mesh = get_mesh(component);
+            UObject* mesh{};
+            if (!guarded_get_skeletal_mesh(component, mesh))
+            {
+                ++result.guarded_native_faults;
+                continue;
+            }
+            if (!is_live_uobject_pointer(mesh))
+            {
+                continue;
+            }
             const auto family = family_for_mesh(mesh);
             if (family < 0)
             {
@@ -546,21 +636,28 @@ namespace
     {
         std::int32_t head_bone_index{-1};
         std::int32_t bone_count{};
+        std::int32_t family{-1};
         bool found{};
     };
 
     auto lookup_target(const UObject* asset) noexcept -> TargetSnapshot
     {
         const auto address = reinterpret_cast<std::uintptr_t>(asset);
-        for (const auto& slot : g_registry)
+        for (std::size_t family = 0; family < g_registry.size(); ++family)
         {
+            const auto& slot = g_registry[family];
             if (slot.asset.load(std::memory_order_acquire) == address && address != 0)
             {
                 const auto head = slot.head_bone_index.load(std::memory_order_relaxed);
                 const auto bones = slot.bone_count.load(std::memory_order_relaxed);
                 if (head >= 0 && head < bones && bones > 0 && bones <= kMaximumBoneCount)
                 {
-                    return TargetSnapshot{head, bones, true};
+                    return TargetSnapshot{
+                        head,
+                        bones,
+                        static_cast<std::int32_t>(family),
+                        true,
+                    };
                 }
                 g_counters.registry_refusals.fetch_add(1, std::memory_order_relaxed);
                 return {};
@@ -599,6 +696,7 @@ namespace
     }
 
     auto make_head_pivot_scale(const Transform3d& head_transform,
+                               std::int32_t family,
                                Matrix44f& adjustment) noexcept -> bool
     {
         Quaternion4d q{};
@@ -626,7 +724,13 @@ namespace
             {xy2 - wz2, 1.0 - (xx2 + zz2), yz2 + wx2},
             {xz2 + wy2, yz2 - wx2, 1.0 - (xx2 + yy2)},
         };
-        constexpr double scale[3]{kFitScaleX, kFitScaleY, kFitScaleZ};
+        const double horizontal_scale = family == 0
+            ? kMan001FitScaleX
+            : kMan002FitScaleX;
+        const double depth_scale = family == 0
+            ? kMan001FitScaleY
+            : kMan002FitScaleY;
+        const double scale[3]{horizontal_scale, depth_scale, kFitScaleZ};
 
         double linear[3][3]{};
         for (std::size_t row = 0; row < 3; ++row)
@@ -760,7 +864,9 @@ namespace
 
         const auto* transforms = static_cast<const Transform3d*>(transform_view.data);
         Matrix44f adjustment{};
-        if (!make_head_pivot_scale(transforms[transform_index], adjustment))
+        if (!make_head_pivot_scale(transforms[transform_index],
+                                   target.family,
+                                   adjustment))
         {
             g_counters.transform_refusals.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -985,7 +1091,7 @@ namespace ZeroCompanyMandoWardrobe::HelmetRenderFit
         g_render_fit_enabled.store(true, std::memory_order_release);
         schedule_scan();
         RC::Output::send<RC::LogLevel::Verbose>(
-            STR("[ZeroCompanyMandoWardrobe] helmet_render_fit_READY hooks=refresh,current-matrices,previous-matrices build=24874058 registry=bounded-game-thread exact_assets=Man001A_HELM,Man002A_HELM mode=head-pivot-render-palette mutation_enabled=true fit_space=head-pivot-render-palette fit_scale_x_y_z=1.06,1.06,1.00 scene_transform_writes=false render_hook_allocations=false render_hook_logs=false mesh_deformers=refused retail_live_args=6 optimized_unused_arg7=ignored\n"));
+            STR("[ZeroCompanyMandoWardrobe] helmet_render_fit_READY hooks=refresh,current-matrices,previous-matrices build=24874058 registry=bounded-game-thread exact_assets=Man001A_HELM,Man002A_HELM mode=head-pivot-render-palette mutation_enabled=true fit_space=head-pivot-render-palette Man001_fit_scale_x_y_z=1.07,1.07,1.00 Man002_fit_scale_x_y_z=1.06,1.06,1.00 scene_transform_writes=false render_hook_allocations=false render_hook_logs=false mesh_deformers=refused retail_live_args=6 optimized_unused_arg7=ignored\n"));
         return true;
     }
 
@@ -1016,8 +1122,10 @@ namespace ZeroCompanyMandoWardrobe::HelmetRenderFit
             {
                 const ScanResult result = scan_registry();
                 RC::Output::send<RC::LogLevel::Verbose>(
-                    STR("[ZeroCompanyMandoWardrobe] helmet_render_fit_registry_scan components={} target_components={} published_assets={} unresolved_assets={} conflicts={} component_bound_refused={} target_bound_refused={}\n"),
+                    STR("[ZeroCompanyMandoWardrobe] helmet_render_fit_registry_scan components={} invalid_components={} guarded_native_faults={} target_components={} published_assets={} unresolved_assets={} conflicts={} component_bound_refused={} target_bound_refused={}\n"),
                     result.component_instances,
+                    result.invalid_components,
+                    result.guarded_native_faults,
                     result.exact_target_components,
                     result.published_assets,
                     result.unresolved_assets,
